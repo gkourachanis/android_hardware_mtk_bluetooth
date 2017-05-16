@@ -221,7 +221,7 @@ typedef struct {
 #define FIXED_STPBT_MAJOR_DEV_ID 111
 
 
-#define FW_DUMP_FILE_NAME "/tmp/log"
+#define FW_DUMP_FILE_NAME "/sdcard/log"
 #define FW_DUMP_END_EVENT "coredump end"
 
 #define BTMTK_LOG_LEVEL_ERROR       1

@@ -196,6 +196,7 @@ static const struct btmtk_sdio_device btmtk_sdio_7668 = {
         .firmware       = "MT7668_FW",
 #else
         .firmware       = "mt7668_patch_e1_hdr.bin",
+        .firmware1       = "mt7668_patch_e2_hdr.bin",
 #endif
         .reg            = &btmtk_reg_7668,
         .support_pscan_win_report = false,
@@ -336,7 +337,7 @@ static int btmtk_sdio_set_own_back(int owntype)
     u32 u32LoopCount = 0;
     u32 u32ReadCRValue = 0;
     u32 ownValue = 0;
-    u32 set_checkretry = 5;
+    u32 set_checkretry = 30;
 
     BTMTK_DBG("%s owntype %d", __func__, owntype);
 
@@ -389,6 +390,7 @@ setretry:
         if ((u32LoopCount == 0) && (0x100 != (u32ReadCRValue&0x100)) && (set_checkretry > 0)) {
             BTMTK_WARN("%s retry set_check driver own", __func__);
             set_checkretry--;
+            mdelay(20);
             goto setretry;
         }
     } else {
@@ -399,11 +401,6 @@ setretry:
         BTMTK_DBG("%s FW_OWN btmtk_sdio_readl CHLPCR 0x%x ", __func__, u32ReadCRValue);
         } while ((u32LoopCount > 0) &&  ((u32ReadCRValue&0x100) != 0));
 
-        if ((u32LoopCount == 0) && ((u32ReadCRValue&0x100) != 0) && (set_checkretry > 0)) {
-            BTMTK_WARN("%s retry set_check FW own", __func__);
-            set_checkretry--;
-            goto setretry;
-        }
     }
 
     BTMTK_DBG("%s CHLPCR(0x%x), is 0x%x\n", __func__, CHLPCR, u32ReadCRValue);
@@ -431,6 +428,7 @@ setretry:
 done:
 
     if (owntype == DRIVER_OWN) {
+		BTMTK_DBG("%s ret=%d\n", __func__,ret);
         if (ret)
             BTMTK_ERR("%s set driver own fail\n", __func__);
         else
@@ -648,16 +646,45 @@ static int btmtk_sdio_send_wmt_reset(void)
 
     return ret;
 }
+static u32 btmtk_sdio_bt_memRegister_read(u32 cr)
+{
+	int retrytime = 300;
+	u32 result = 0;
+	u8 wmt_event[15] = {0x04,0xE4,0x10,0x02,0x08,0x0C/*0x1C*/,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x80 };
+	u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = {0};
+	u8 mtksdio_wmt_cmd[16] = {0x1,0x6F,0xFC,0x0C,0x01,0x08,0x08,0x00,0x02,0x01,0x00,0x01,0x00,0x00,0x00,0x00};
+	mtksdio_packet_header[0] = sizeof(mtksdio_packet_header) + sizeof(mtksdio_wmt_cmd);
+        BTMTK_INFO("%s: read cr %x\n",__func__,cr);
+        memcpy(&mtksdio_wmt_cmd[12],&cr,sizeof(cr));
+	memcpy(txbuf,mtksdio_packet_header,MTK_SDIO_PACKET_HEADER_SIZE);
+	memcpy(txbuf+MTK_SDIO_PACKET_HEADER_SIZE,mtksdio_wmt_cmd,sizeof(mtksdio_wmt_cmd));
+	btmtk_sdio_send_tx_data(txbuf,MTK_SDIO_PACKET_HEADER_SIZE+sizeof(mtksdio_wmt_cmd));
+	btmtk_print_buffer_conent(txbuf,MTK_SDIO_PACKET_HEADER_SIZE+sizeof(mtksdio_wmt_cmd));
+        do{
+            msleep(10);
+	    btmtk_sdio_recv_rx_data();
+            retrytime--;
+		if(retrytime<=0)
+			break;
+		BTMTK_INFO("%s: retrytime %d\n",__func__,retrytime);
+	}while(!rxbuf[0]);
+	btmtk_print_buffer_conent(rxbuf,rx_length);
+	memcpy(&result,rxbuf+MTK_SDIO_PACKET_HEADER_SIZE+sizeof(wmt_event),sizeof(result));
+        BTMTK_INFO("%s: ger cr 0x%x value 0x%x\n",__func__,cr,result);
+	return result;
+}
 /*
 *1:on ,  0:off
 */
 static int btmtk_sdio_bt_set_power(u8 onoff)
 {
     int ret = 0;
-    int retrytime = 300;
+    int retrytime = 60;
     u8 wmt_event[8] = {4, 0xE4, 5, 2, 6, 1, 0, 0};
     u8 mtksdio_packet_header[MTK_SDIO_PACKET_HEADER_SIZE] = {0};
     u8 mtksdio_wmt_cmd[10] = {1, 0x6F, 0xFC, 6, 1, 6, 2, 0, 0, 1};
+    if (onoff==0)
+        retrytime = 3;
 
     mtksdio_packet_header[0] = sizeof(mtksdio_packet_header) + sizeof(mtksdio_wmt_cmd);
     BTMTK_INFO("%s: onoff %d\n", __func__, onoff);
@@ -671,11 +698,13 @@ static int btmtk_sdio_bt_set_power(u8 onoff)
 
 
     do {
-        msleep(20);
+        msleep(100);
         btmtk_sdio_recv_rx_data();
         retrytime--;
         if (retrytime <= 0)
             break;
+        if (retrytime < 40)
+            BTMTK_WARN("%s: retry over 2s, retrytime %d\n", __func__, retrytime);
 
         BTMTK_INFO("%s: retrytime %d\n", __func__, retrytime);
     } while (!rxbuf[0]);
@@ -932,6 +961,7 @@ static int btmtk_sdio_download_rom_patch(struct btmtk_sdio_card *card)
         u16 u2HwVer = 0;
         u16 u2SwVer = 0;
         u32 u4PatchVer = 0;
+        u32 uhwversion = 0;
 
 
         u32 u32ReadCRValue = 0;
@@ -986,6 +1016,9 @@ static int btmtk_sdio_download_rom_patch(struct btmtk_sdio_card *card)
             return ret;
         }
 
+        uhwversion = btmtk_sdio_bt_memRegister_read(HW_VERSION);
+        BTMTK_INFO("%s uhwversion 0x%x\n",__func__,uhwversion);
+        if (uhwversion == 0x8A00){
         BTMTK_INFO("%s request_firmware(firmware name %s)\n", __func__, card->firmware);
         ret = request_firmware(&fw_firmware, card->firmware,
                                                         &card->func->dev);
@@ -995,6 +1028,19 @@ static int btmtk_sdio_download_rom_patch(struct btmtk_sdio_card *card)
                                     ret);
                 ret = -ENOENT;
                 goto done;
+            }
+        }
+        else {
+            BTMTK_INFO("%s request_firmware(firmware name %s)\n",__func__,card->firmware1);
+	    ret = request_firmware(&fw_firmware, card->firmware1,
+                                                        &card->func->dev);
+            if ((ret < 0) || !fw_firmware) {
+                BTMTK_ERR("request_firmware(firmware name %s) failed, error code = %d",
+                                                                        card->firmware1,
+									ret);
+                ret = -ENOENT;
+                goto done;
+            }
         }
 
         firmware = fw_firmware->data;
@@ -1115,10 +1161,10 @@ static int btmtk_sdio_download_rom_patch(struct btmtk_sdio_card *card)
 
         ret = btmtk_sdio_bt_set_power(1);
 
-        if (ret)
+        if (ret){
             ret = EINVAL;
             goto done;
-
+        }
 
         ret = btmtk_sdio_set_sleep();
 
@@ -1178,6 +1224,7 @@ static int btmtk_sdio_card_to_host(struct btmtk_private *priv)
                             FW_DUMP_FILE_NAME"_%d", probe_counter);
                     BTMTK_WARN("%s : open file %s\n", __func__, fw_dump_file_name);
                     fw_dump_file = filp_open(fw_dump_file_name, O_RDWR | O_CREAT, 0644);
+					BTMTK_WARN("%s: fw_dump_file :%p\n",__func__,fw_dump_file);
                     if (fw_dump_file)
                          BTMTK_WARN("%s : open file %s success\n", __func__, fw_dump_file_name);
                     else
@@ -1742,6 +1789,7 @@ static int btmtk_sdio_host_to_card(struct btmtk_private *priv,
 
                 card->helper = data->helper;
                 card->firmware = data->firmware;
+                card->firmware1 = data->firmware1;
                 card->reg = data->reg;
                 card->sd_blksz_fw_dl = data->sd_blksz_fw_dl;
                 card->support_pscan_win_report = data->support_pscan_win_report;
@@ -1984,6 +2032,10 @@ static int btmtk_fops_open(struct inode *inode, struct file *file)
 {
     BTMTK_INFO("%s begin", __func__);
 
+    if (!probe_ready) {
+        BTMTK_ERR("%s probe_ready is %d return", __func__,probe_ready);
+        return -EFAULT;
+    }
     /*if (!probe_ready) {
         BTMTK_ERR("%s probe_ready is %d return", __func__,probe_ready);
         return -EFAULT;

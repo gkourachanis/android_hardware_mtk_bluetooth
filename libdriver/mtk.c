@@ -36,7 +36,7 @@
  */
 
 #include <stdio.h>
-//#include <stdlib.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <cutils/properties.h>
@@ -54,14 +54,26 @@
 
 
 #include "bt_mtk.h"
-
+#include "upio.h"
 /*add for ZTE set sdio power*/
 #include <asm/ioctl.h>
-#define SDIO_POWER_UP    _IO('m',3)
-#define SDIO_POWER_DOWN  _IO('m',4)
+
+
 //0: power on
 //!0: power off
 /*end*/
+#ifndef UPIO_DBG
+#define UPIO_DBG TRUE
+#endif
+#if (UPIO_DBG == TRUE)
+#define UPIODBG(param, ...) {ALOGD(param, ## __VA_ARGS__);}
+#else
+#define UPIODBG(param, ...) {}
+#endif
+static char *rfkill_state_path = NULL;
+static int rfkill_id = -1;
+static int bt_emul_enable = 0;
+#define msleep(x) usleep(x*1000) 
 
 /**************************************************************************
  *                  G L O B A L   V A R I A B L E S                       *
@@ -94,77 +106,148 @@ static const char DRIVER_PROP_NAME[]    = "bluetooth.btdriver.mtk";
 //static const char DRIVER_PROP_NAME2[]    = "mtkbt";
 //static const char DRIVER_PROP_NAME_INSMOD[]    = "bluetooth.btdriver.insmod";
 
-int set_sdio_power(int on)
+/*****************************************************************************
+**   Bluetooth On/Off Static Functions
+*****************************************************************************/
+static int is_emulator_context(void)
 {
-    int fd;
-    fd = open("/dev/wifi_power", O_RDWR);
-    if (fd !=  - 1) {
-        if(on== SDIO_POWER_UP) {
-            if (ioctl (fd,SDIO_POWER_UP)<0) {
-                ALOGD("Set SDIO power up error!!!\n");
-		            close(fd);
-                return 0;
-            }
-            else
-            {
-					ALOGD("Set SDIO power up ok!!!\n");
-            		return 1;
-            }
-        }else if (on== SDIO_POWER_DOWN) {
-            if (ioctl (fd,SDIO_POWER_DOWN)<0) {
-                ALOGD("Set SDIO power down error!!!\n");
-		            close(fd);
-                return 0;
-            }
-            else
-            	{
-					ALOGD("Set SDIO power down ok!!!\n");
-            		return 1;
-            	}
-        }
-    }
-    else
-        ALOGE("Device open failed !!!\n");
+    char value[PROPERTY_VALUE_MAX];
 
-    close(fd);
+    property_get("ro.kernel.qemu", value, "0");
+    UPIODBG("is_emulator_context : %s", value);
+    if (strcmp(value, "1") == 0) {
+        return 1;
+    }
     return 0;
 }
 
-/*static int insmod(const char *filename, const char *args)
+static int is_rfkill_disabled(void)
 {
-		ALOGE("insmod");
-	    void *module;
-		unsigned int size;
-		int ret;
-		module = load_file(filename, &size);
-		if (!module)
-			return -1;
+    char value[PROPERTY_VALUE_MAX];
 
-		ret = init_module(module, size, args);
-		ALOGE("%s,ret=%d\n",__FUNCTION__,ret);
-		free(module);
+    property_get("ro.rfkilldisabled", value, "0");
+    UPIODBG("is_rfkill_disabled ? [%s]", value);
 
-		return ret;
+    if (strcmp(value, "1") == 0) {
+        return UPIO_BT_POWER_ON;
+    }
+
+    return UPIO_BT_POWER_OFF;
 }
 
-static int rmmod(const char *modname)
+static int init_rfkill()
 {
-	    int ret = -1;
-		    int maxtry = 10;
+    char path[64];
+    char buf[16];
+    int fd, sz, id;
 
-			    while (maxtry-- > 0) {
-					        ret = delete_module(modname, O_NONBLOCK | O_EXCL);
-							        if (ret < 0 && errno == EAGAIN)
-										            usleep(500000);
-									        else
-												            break;
-											    }
+    if (is_rfkill_disabled())
+        return -1;
 
-				    if (ret != 0)
-						        ALOGD("Unable to unload driver module \"%s\": %s\n",
-										             modname, strerror(errno));
-					    return ret;
-}*/
+    for (id = 0; ; id++)
+    {
+        snprintf(path, sizeof(path), "/sys/class/rfkill/rfkill%d/type", id);
+        fd = open(path, O_RDONLY);
+        if (fd < 0)
+        {
+            ALOGE("init_rfkill : open(%s) failed: %s (%d)\n", \
+                 path, strerror(errno), errno);
+            return -1;
+        }
+
+        sz = read(fd, &buf, sizeof(buf));
+        close(fd);
+
+        if (sz >= 9 && memcmp(buf, "bluetooth", 9) == 0)
+        {
+            rfkill_id = id;
+            break;
+        }
+    }
+
+    asprintf(&rfkill_state_path, "/sys/class/rfkill/rfkill%d/state", rfkill_id);
+    return 0;
+}
+
+
+/*******************************************************************************
+**
+** Function        upio_set_bluetooth_power
+**
+** Description     Interact with low layer driver to set Bluetooth power
+**                 on/off.
+**
+** Returns         0  : SUCCESS or Not-Applicable
+**                 <0 : ERROR
+**
+*******************************************************************************/
+int upio_set_bluetooth_power(int on)
+{
+    int sz;
+    int fd = -1;
+    int ret = -1;
+    char buffer = '0';
+	ALOGE("amlogic-upio_set_bluetooth_power on:%d",on);
+    switch(on)
+    {
+        case UPIO_BT_POWER_OFF:
+            buffer = '0';
+            break;
+
+        case UPIO_BT_POWER_ON:
+            buffer = '1';
+            break;
+    }
+
+    if (is_emulator_context())
+    {
+        /* if new value is same as current, return -1 */
+        if (bt_emul_enable == on)
+            return ret;
+
+        UPIODBG("set_bluetooth_power [emul] %d", on);
+
+        bt_emul_enable = on;
+        return 0;
+    }
+
+    /* check if we have rfkill interface */
+    if (is_rfkill_disabled())
+        return 0;
+
+    if (rfkill_id == -1)
+    {
+        if (init_rfkill())
+        	{
+        		ALOGE("#####INIT rfkill fail");
+            	return ret;
+}
+    }
+
+    fd = open(rfkill_state_path, O_WRONLY);
+	ALOGE("#######open rfkill fd=%d",fd);
+    if (fd < 0)
+    {
+        ALOGE("set_bluetooth_power : open(%s) for write failed: %s (%d)",
+            rfkill_state_path, strerror(errno), errno);
+        return ret;
+    }
+
+    sz = write(fd, &buffer, 1);
+	ALOGE("####write rfkill sz=%d",sz);
+    if (sz < 0) {
+        ALOGE("set_bluetooth_power : write(%s) failed: %s (%d)",
+            rfkill_state_path, strerror(errno),errno);
+    }
+    else
+        ret = 0;
+
+    if (fd >= 0)
+        close(fd);
+
+    return ret;
+}
+
 
 int bt_load_driver()
 {
@@ -172,7 +255,11 @@ int bt_load_driver()
 	int count = 0; 
    //int ins;
     sleep(1);
-    if(set_sdio_power(SDIO_POWER_UP))
+   //upio_set_bluetooth_power(UPIO_BT_POWER_ON);
+   //ALOGE("set sdio power on success\n");
+   //msleep(200);
+   //sdio_reinit();
+    if(upio_set_bluetooth_power(UPIO_BT_POWER_ON)==0)
    	{
    		ALOGE("set sdio power on success\n");
    	}
@@ -180,34 +267,14 @@ int bt_load_driver()
    	{
    	    ALOGE("set sdio power on failed\n");
    	}
-   
-  
-    //insmod bt ko
-	/*
-	ALOGD("check loading bt driver whether ok ins = %d ", ins);
-	*/
 	property_get(DRIVER_PROP_NAME, driver_status, "mtkdrunkown");
 	ALOGD("check loading bt driver whether ok ####000 driver_status = %s ", driver_status);
 	if(strcmp("true",driver_status) == 0)
 	   return 1;
 	ALOGD("check loading bt driver whether ok driver_status = %s ", driver_status);
 	property_set(DRIVER_PROP_NAME,"true");
-	/*if (insmod("/system/lib/btmtksdio.ko","") < 0)
-		return 0;*/
-	//property_set(DRIVER_PROP_NAME_INSMOD,"true");
 	sleep(3);
-	/*while(1){
-		usleep(100000);
-		count++;
-	    property_get(DRIVER_PROP_NAME, driver_status, NULL);
-		ALOGD("count: %d driver_status = %s ", count, driver_status);
-		if(strcmp("ok",driver_status) == 0)
-		    return 1;	
-		if(count > 100){
-		    ALOGD("check loading bt driver fail  count=%d",count);
-		    return -1;
-		 }	  
-	}*/
+	
   return 1;
 }
 
@@ -240,16 +307,23 @@ void clean_callbacks(void)
 int init_uart(void)
 {
     LOG_TRC();
-    
+    int i=6;
     /*insmod bt driver*/
     if(bt_load_driver())
     	{
     		ALOGD("insmod bt driver ok\n");
-    		bt_fd = open("/dev/stpbt", O_RDWR | O_NOCTTY | O_NONBLOCK);
-			if (bt_fd < 0) {
-				LOG_ERR("Can't open serial port\n");
-				return -1;
-			}
+			do{
+    			bt_fd = open("/dev/stpbt", O_RDWR | O_NOCTTY | O_NONBLOCK);
+				if (bt_fd < 0) {
+					LOG_ERR("Can't open serial port\n");
+					i--;
+					msleep(300);
+				}
+				else{
+					ALOGD("open stpbt ok!\n");
+					break;
+					}
+			}while(i>0);
     	}
     	else
     	{
@@ -267,12 +341,10 @@ void close_uart(void)
     close(bt_fd);
     bt_fd = -1;
     
-   /*rmmod bt driver*/
-   //system("rmmod /system/lib/btmtksdio.ko"); 
   /*set sdio off*/
    property_set(DRIVER_PROP_NAME,"false");
    sleep(2);
-   set_sdio_power(SDIO_POWER_DOWN);
+   upio_set_bluetooth_power(UPIO_BT_POWER_OFF);
 }
 
 static int bt_get_combo_id(unsigned int *pChipId)

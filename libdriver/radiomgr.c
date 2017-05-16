@@ -39,9 +39,9 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <signal.h>
-
+#include <memory.h>
 #include "bt_mtk.h"
-
+#include <stdio.h>
 
 /**************************************************************************
  *                  G L O B A L   V A R I A B L E S                       *

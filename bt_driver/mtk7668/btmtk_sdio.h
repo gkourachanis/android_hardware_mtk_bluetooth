@@ -19,6 +19,8 @@
  *
  **/
 
+
+#define VERSION "v0.0.0.18"
 #define VERSION "v0.0.0.15"
 
 #define SDIO_HEADER_LEN                 4
@@ -122,6 +124,7 @@ struct btmtk_sdio_card {
         u32 ioport;
         const char *helper;
         const char *firmware;
+        const char *firmware1;
         const struct btmtk_sdio_card_reg *reg;
         bool support_pscan_win_report;
         bool supports_fw_dump;
@@ -133,6 +136,7 @@ struct btmtk_sdio_card {
 struct btmtk_sdio_device {
         const char *helper;
         const char *firmware;
+        const char *firmware1;
         const struct btmtk_sdio_card_reg *reg;
         const bool support_pscan_win_report;
         u16 sd_blksz_fw_dl;
@@ -148,6 +152,8 @@ typedef struct _PATCH_HEADER {
     u16 u2PatchStartAddr;/*Patch ram start address*/
 } PATCH_HEADER, *P_PATCH_HEADER;
 #pragma pack()
+#define HW_VERSION 0x80000000
+#define FW_VERSION 0x80000004
 
 /*common register address*/
 #define CHLPCR 0x0004

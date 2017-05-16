@@ -12,8 +12,7 @@ LOCAL_SRC_FILES := \
   radiomgr.c \
   radiomod.c
 $(info libbluetooth_mtk c)
-LOCAL_C_INCLUDES := \
-  system/bt/hci/include
+LOCAL_C_INCLUDES := system/bt/hci/include
 
 $(info libbluetooth_mtk include)
 LOCAL_CFLAGS += -DMTK_MT7662
@@ -42,7 +41,11 @@ $(info lib -vendor include)
 LOCAL_CFLAGS :=
 
 LOCAL_MODULE_TAGS := optional
+ifeq ($(BLUETOOTH_MODULE), MULTI_BLUETOOTH_SUPPORT)
+LOCAL_MODULE := libbt-vendor-mtk
+else
 LOCAL_MODULE := libbt-vendor
+endif
 LOCAL_SHARED_LIBRARIES := liblog libbluetooth_mtk
 LOCAL_PRELINK_MODULE := false
 include $(BUILD_SHARED_LIBRARY)
