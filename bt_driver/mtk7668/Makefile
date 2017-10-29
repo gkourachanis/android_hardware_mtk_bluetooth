@@ -12,7 +12,6 @@
 ###############################################################################
 # SDIO
 ###############################################################################
-#VPATH = /opt/toolchains/gcc-linaro-aarch64-linux-gnu-4.9-2014.09_linux
 SDIO_MOD_NAME = btmtksdio
 SDIO_CFILES := \
 	btmtk_sdio.c btmtk_main.c
@@ -30,7 +29,7 @@ KDIR ?=
 sdio:
 	$(MAKE) -C $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) modules
 	#make -C $(KERNEL_SRC) M=$(PWD) $(SDIO_MOD_NAME).ko
-	#make -C /Projects/ZTE/linux M=$(PWD) modules ARCH=arm64 CROSS_COMPILE=/opt/toolchains/gcc-linaro-aarch64-linux-gnu-4.9-2014.09_linux/bin/aarch64-linux-gnu-
+	#make -C /Projects/ZTE/linux M=$(PWD) modules ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 
 clean:
 	make -C $(KERNEL_SRC) M=$(PWD) clean
